@@ -1,128 +1,142 @@
 // src/pages/RegisterPage.jsx
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import axiosClient from "../api/axiosClient";
-import Layout from "../components/Layout";
+import axiosClient, { API_PATHS } from "../api/axiosClient";
+import { useAuth } from "../context/AuthContext";
+import "../App.css";
 
-const RegisterPage = () => {
+export default function RegisterPage() {
+  const { register, login} = useAuth();
+  const navigate = useNavigate();
+
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [userType, setUserType] = useState("JOB_SEEKER");
+  const [role, setRole] = useState("JOB_SEEKER");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false); // avoid double-submit
+  const [confirm, setConfirm] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
 
-  const navigate = useNavigate();
+  const [showAdminOption, setShowAdminOption] = useState(true);
+  const [checkingAdmins, setCheckingAdmins] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      setCheckingAdmins(true);
+      try {
+        // Preferred public endpoint that returns a number
+        const res = await axiosClient.get("/api/admins/public/count", { skipAuth: true }).catch(() => null);
+        if (res && (typeof res.data === "number" || typeof res.data?.data === "number")) {
+          const count = typeof res.data === "number" ? res.data : res.data.data;
+          setShowAdminOption(count === 0);
+        } else {
+          // fallback: try GET /api/admins
+          const res2 = await axiosClient.get("/api/admins", { skipAuth: true }).catch(() => null);
+          if (res2 && Array.isArray(res2.data)) setShowAdminOption(res2.data.length === 0);
+          else setShowAdminOption(true); // safe fallback — allow admin creation
+        }
+      } catch (e) {
+        setShowAdminOption(true);
+      } finally {
+        setCheckingAdmins(false);
+         //const res3= await axiosClient.get("/api/admins");
+      }
+    })();
+  }, []);
+
+  const validate = () => {
+    if (!name.trim()) return "Please enter name";
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return "Enter valid email";
+    if (password.length < 6) return "Password must be at least 6 chars";
+    if (password !== confirm) return "Passwords don't match";
+    return null;
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (loading) return; // ignore extra clicks
+    setErr("");
+    const v = validate();
+    if (v) return setErr(v);
 
-    setError("");
     setLoading(true);
-
     try {
+      // register payload - adjust field names to match backend if different
       const payload = {
-        name,
-        email,
+        name: name.trim(),
+        email: email.trim().toLowerCase(),
         password,
-        userType,
+        userType: role // "ADMIN" | "JOB_SEEKER" | "EMPLOYER" as backend expects
       };
+      const res = await register(payload);
+      const created = res?.data ?? res;
+      const userId = created ?.userId ?? created?.id ?? created?.data?.userId;
 
-      const res = await axiosClient.post("/api/users", payload);
-      console.log("Register response from backend:", res);
-
-      // If backend returns 2xx, treat as success
-      if (res.status >= 200 && res.status < 300) {
-        alert("Registration successful. Please log in.");
-        navigate("/login");
-      } else {
-        // Non-2xx but no exception thrown – very rare
-        setError(res.data?.message || "Registration failed");
+      try{
+        await login(email, password, userId);
+      }catch(ignore){
+        
       }
-    } catch (err) {
-      console.error("Register error:", err);
-
-      const backendMsg = err.response?.data?.message || "";
-
-      // ⚠️ Workaround for your case:
-      // If backend complains about duplicate email, we assume the user
-      // already exists (maybe created just now) and send them to login.
-      if (
-        backendMsg.toLowerCase().includes("duplicate entry") &&
-        backendMsg.toLowerCase().includes("users.email")
-      ) {
-        alert(
-          "This email is already registered. Please log in with your credentials."
-        );
-        navigate("/login");
-        return;
+      if(role ==="ADMIN" || role === "admin"){
+        try{
+          await axiosClient.post(API_PATHS.ADMIN_CREATE || "/api/admins", {userId});
+        }catch(adminErr){
+          console.warn("Failed to create admin row", adminErr);
+        }
       }
-
-      // Any other error
-      setError(backendMsg || "Registration failed. Please try again.");
+      // After register -> go to login page
+      navigate("/login");
+    } catch (error) {
+      console.error("register failed", error);
+      setErr(error?.response?.data?.message || error?.message || "Registration failed");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <Layout>
-      <div className="register-page">
-        <h2>Create account</h2>
-        <p>Join and find your next opportunity</p>
+    <div className="auth-page register-page">
+      <div className="card auth-card">
+        <h2>Create an account</h2>
 
-        <form onSubmit={handleSubmit}>
-          <label>
-            Full name
-            <input
-              type="text"
-              required
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
+        <form onSubmit={handleSubmit} className="auth-form">
+          <label>Full name
+            <input value={name} onChange={(e) => setName(e.target.value)} required />
           </label>
 
-          <label>
-            Email
-            <input
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
+          <label>Email
+            <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" required />
           </label>
 
-          <label>
-            Role
-            <select
-              value={userType}
-              onChange={(e) => setUserType(e.target.value)}
-            >
+          <label>Role
+            <select value={role} onChange={(e) => setRole(e.target.value)} disabled={checkingAdmins}>
+              {showAdminOption && <option value="ADMIN">Admin</option>}
               <option value="JOB_SEEKER">Job Seeker</option>
               <option value="EMPLOYER">Employer</option>
             </select>
           </label>
 
-          <label>
-            Password
-            <input
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
+          <label>Password
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
           </label>
 
-          {error && <p className="error-text">{error}</p>}
+          <label>Confirm password
+            <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} required />
+          </label>
 
-          <button type="submit" disabled={loading}>
-            {loading ? "Signing Up..." : "Sign Up"}
-          </button>
+          {err && <div className="error">{err}</div>}
+
+          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            <button className="pill-button filled" type="submit" disabled={loading}>
+              {loading ? "Creating..." : "Create account"}
+            </button>
+          </div>
+
+          <div className="muted">
+            {checkingAdmins ? "Checking system..." : (showAdminOption ? "No admin found — allow Admin signup." : "Admin exists — Admin signup hidden.")}
+          </div>
         </form>
       </div>
-    </Layout>
+    </div>
   );
-};
+}
 
-export default RegisterPage;
