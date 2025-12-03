@@ -1,103 +1,58 @@
 // src/pages/LoginPage.jsx
 import React, { useState } from "react";
-import { useNavigate, Navigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-import Layout from "../components/Layout";
 
-const LoginPage = () => {
+/**
+ * LoginPage
+ * Accepts optional redirect query param `?redirect=/path`
+ */
+export default function LoginPage() {
   const { login } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const redirect = new URLSearchParams(location.search).get("redirect") || "/jobs";
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const navigate = useNavigate();
- const  [loading, setLoading] =useState("");
- // if (isAuthenticated) {
- //   return <Navigate to="/" replace />;
- // }
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setError("");
-
-    const result = await login(email, password);
-
-    if (!result) {
-      setError("Unexpected error during login.");
-      return;
-    }
-    if (!result.success) {
-      setError(result.message);
-      return;
-    }
-
-    const user = result.user;
-
-    // 👇 First-time login → force profile completion
-    if (user.status === "PENDING") {
-      navigate("/profile");
-      return;
-    }
-
-    // 👇 Regular navigation by role
-    if (user.userType === "JOB_SEEKER") {
-      navigate("/jobs");
-    } else if (user.userType === "EMPLOYER") {
-      navigate("/employer/dashboard");
-    } else if (user.userType === "ADMIN") {
-      navigate("/admin/dashboard");
-    } else {
-      navigate("/"); // fallback
+    setErr("");
+    setLoading(true);
+    try {
+      const res = await login(email.trim().toLowerCase(), password);
+      // if login returned user, route accordingly - AuthContext routes on fetch
+      if (res?.user) {
+        // if user status incomplete AuthContext handles redirect to /profile
+        navigate(redirect, { replace: true });
+      } else {
+        // fallback
+        navigate(redirect, { replace: true });
+      }
+    } catch (err) {
+      console.error("login failed", err);
+      setErr(err?.message || "Login failed");
+    } finally {
+      setLoading(false);
     }
   };
-  
 
   return (
-    <Layout>
+    <div style={{ maxWidth: 520, margin: "28px auto", padding: 12 }}>
       <div className="auth-card">
-        <h2>Welcome back</h2>
-        <p className="subtitle">Log in to continue</p>
-
-        <form onSubmit={handleSubmit} className="form">
-          <label>
-            Email
-            <input
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </label>
-
-          <label>
-            Password
-            <input
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </label>
-
-          {error && <p className="error-text">{error}</p>}
-
-          <button className="pill-button filled full" disabled={loading}>
-            {loading ? "Logging in..." : "Login"}
-          </button>
+        <h2>Login</h2>
+        <form className="form" onSubmit={handleSubmit}>
+          <label>Email<input required type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></label>
+          <label>Password<input required type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
+          {err && <div style={{ color: "#f97373" }}>{err}</div>}
+          <div style={{ marginTop: 12 }}>
+            <button className="pill-button filled" type="submit" disabled={loading}>{loading ? "Signing in..." : "Sign in"}</button>
+          </div>
         </form>
-
-        <p className="small-text">
-          New here?{" "}
-          <button
-            type="button"
-            className="link-button"
-            onClick={() => navigate("/register")}
-          >
-            Create an account
-          </button>
-        </p>
       </div>
-    </Layout>
+    </div>
   );
-};
-
-export default LoginPage;
+}
