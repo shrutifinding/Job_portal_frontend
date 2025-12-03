@@ -1,150 +1,202 @@
 // src/context/AuthContext.jsx
-import React, { createContext, useContext, useState, useEffect } from "react";
+import React, { createContext, useContext, useEffect, useState } from "react";
+import axiosClient, { API_PATHS, normalizeResponse } from "../api/axiosClient";
 import { useNavigate } from "react-router-dom";
-import axiosClient from "../api/axiosClient";
 
 const AuthContext = createContext();
 
-export const AuthProvider = ({ children }) => {
+export function useAuth() {
+  return useContext(AuthContext);
+}
+/*export function authHeaders(){
+  const token = localStorage.getItem('token');
+  return token ? {'Authorization' : `Bearer ${token}` } : {};
+}*/
+
+export function AuthProvider({ children }) {
   const navigate = useNavigate();
 
-  const [token, setToken] = useState(localStorage.getItem("token") || null);
-  const [user, setUser] = useState(
-    localStorage.getItem("user") ? JSON.parse(localStorage.getItem("user")) : null
-  );
-  const [role, setRole] = useState(localStorage.getItem("role") || null);
-  const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem("token"));
+  const [user, setUser] = useState(() => {
+    try {
+      const raw = localStorage.getItem("authUser");
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  });
   const [loading, setLoading] = useState(false);
-
-  // ---------- HELPERS ----------
-  const saveAuth = (token, user) => {
-    setToken(token);
-    setUser(user);
-    setRole(user.userType);
-    setIsAuthenticated(true);
-
-    localStorage.setItem("token", token);
-    localStorage.setItem("user", JSON.stringify(user));
-    localStorage.setItem("role", user.userType);
-  };
-
-  const clearAuth = () => {
-    setToken(null);
-    setUser(null);
-    setRole(null);
-    setIsAuthenticated(false);
-
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
-    localStorage.removeItem("role");
-  };
-
-  // ---------- LOGIN ----------
-  const login = async (email, password) => {
-    setLoading(true);
-    try {
-      const res = await axiosClient.post("/api/users/login", { email, password });
-      console.log("Login response from backend:", res.data);
-
-      const { token, user } = res.data.data;
-      saveAuth(token, user);
-
-      // AFTER LOGIN → decide where to go based on role & profile
-      await routeAfterLogin(user);
-    } catch (err) {
-      console.error("Login error:", err);
-      throw err; // LoginPage will catch and show “Internal Server Error”
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // ---------- ROUTE DECISION AFTER LOGIN ----------
-  const routeAfterLogin = async (user) => {
-    const userId = user.userId;
-    const userType = user.userType;
-
-    try {
-      if (userType === "JOB_SEEKER") {
-        // check if job seeker profile exists
-        try {
-          const res = await axiosClient.get(`/api/jobseekers/checkuser/${userId}`);
-          const js = res.data.data;
-          console.log("Job seeker check:", js);
-
-          if (js) {
-            // profile exists – go to jobs page
-            navigate("/jobs", { replace: true });
-          } else {
-            // safety fallback
-            navigate("/profile", { replace: true });
+  const [authReady, setAuthReady] = useState(false);
+  const[token, setToken] = useState("");
+  // When initialized, if token exists but user missing, try to fetch user
+  useEffect(() => {
+    const token = localStorage.getItem("authToken");
+    const storedUser = localStorage.getItem("authUser");
+    if (token && !storedUser) {
+      // If no stored user, try to call backend to fetch it if we saved userId
+      const savedUserId = localStorage.getItem("authUserId");
+      if (savedUserId) {
+        (async () => {
+          try {
+            const res = await axiosClient.get(API_PATHS.GET_USER_BY_ID(savedUserId));
+            const u = normalizeResponse(res);
+            setUser(u);
+            localStorage.setItem("authUser", JSON.stringify(u));
+          } catch (err) {
+            // token invalid or fetch failed, clear token
+            localStorage.removeItem("authToken");
+            localStorage.removeItem("authUserId");
+            localStorage.removeItem("authUser");
+            setUser(null);
+          } finally {
+            setAuthReady(true);
           }
-        } catch (err) {
-          if (err.response?.status === 404) {
-            // No profile yet → open profile form
-            navigate("/profile", { replace: true });
-          } else {
-            console.error("Error checking job seeker profile:", err);
-            navigate("/profile", { replace: true }); // safe fallback
-          }
-        }
-      } else if (userType === "EMPLOYER") {
-        // check if employer profile exists
-        try {
-          const res = await axiosClient.get(`/api/employers/checkuser/${userId}`);
-          const employer = res.data.data;
-          console.log("Employer check:", employer);
-
-          if (!employer) {
-            navigate("/profile", { replace: true });
-            return;
-          }
-
-          // If employer exists but not approved yet → stay on profile
-          if (employer.approvalStatus === "APPROVED") {
-            navigate("/employer/dashboard", { replace: true });
-          } else {
-            navigate("/profile", { replace: true });
-          }
-        } catch (err) {
-          if (err.response?.status === 404) {
-            // no employer row yet → first-time login
-            navigate("/profile", { replace: true });
-          } else {
-            console.error("Error checking employer profile:", err);
-            navigate("/profile", { replace: true });
-          }
-        }
-      } else if (userType === "ADMIN") {
-        navigate("/admin/dashboard", { replace: true });
+        })();
       } else {
-        // unknown role → log out for safety
-        clearAuth();
-        navigate("/login", { replace: true });
+        setAuthReady(true);
       }
-    } catch (err) {
-      console.error("Error in routeAfterLogin:", err);
-      navigate("/login", { replace: true });
+    } else {
+      setAuthReady(true);
+    }
+  }, []);
+
+  const saveAuth = (token, u) => {
+    if (token) localStorage.setItem("authToken", token);
+    if (u) {
+      setUser(u);
+      localStorage.setItem("authUser", JSON.stringify(u));
+      if (u.userId || u.id) localStorage.setItem("authUserId", u.userId || u.id);
     }
   };
 
-  // ---------- LOGOUT ----------
+  // routeAfterLogin: if first-login (status PENDING/INCOMPLETE) redirect to /profile else to role dashboard
+  const routeAfterLogin = (user, token) => {
+    // store token and user
+  localStorage.setItem("authToken", token);
+  localStorage.setItem("authUser", JSON.stringify(user));
+  setUser(user);
+  setToken(token);
+
+  const type = (user.userType || user.type || "").toUpperCase();
+  const status = (user.status || "").toUpperCase();
+
+  // If Employer or JobSeeker and profile incomplete -> redirect to /complete-profile
+  // Decide profile completeness by either a flag user.profileCompleted or by GET to /api/employers/user/{id} and /api/jobseekers/user/{id}
+  if (type === "ADMIN") {
+    navigate("/admin");
+    return;
+  }
+
+  if ((type === "EMPLOYER" || type === "JOB_SEEKER")) {
+    // if user.status is PENDING, but if employer first-time login they should complete profile,
+    // we redirect them to complete-profile (which will create employer/job_seeker rows)
+    // For robustness check profile via API:
+    // try to fetch employer or jobseeker profile, otherwise redirect to complete-profile
+    const userId = user.userId || user.id || user.user_id;
+
+    if (type === "EMPLOYER") {
+      // navigate to complete-profile if employer hasn't completed company/employer record
+      navigate("/complete-profile");
+      return;
+    }
+
+    if (type === "JOB_SEEKER") {
+      navigate("/complete-profile");
+      return;
+    }
+  }
+
+  // default
+  navigate("/jobs");
+  };
+
+  /**
+   * login(email,password)
+   * - POST /api/users/login
+   * - backend LoginResponse may contain token and user or token + userId
+   */
+  const login = async (email, password) =>  {
+  // existing call to backend for auth
+  const res = await axiosClient.post("/api/users/login", { email, password });
+  const data = res?.data ?? res;
+  const token = data?.token || data?.accessToken || data?.data?.token;
+  const user = data?.user || data?.data || data;
+
+  if (token) localStorage.setItem("authToken", token);
+  if (user) localStorage.setItem("authUser", JSON.stringify(user));
+  setUser(user);
+  setToken(token);
+
+  // Decide redirect:
+  // If user needs to complete profile (first login): redirect to /complete-profile (you should have page)
+  // We'll check a field like user.profileCompleted or user.status or user.userType
+  const userType = user?.userType || user?.type || user?.user_type;
+  const status = user?.status || user?.userStatus || user?.statusValue;
+
+  // Heuristic: if jobseeker or employer and their full record doesn't exist -> complete profile
+  // If you store a boolean like profileCompleted, check that:
+  const profileComplete = user?.profileCompleted ?? user?.profile_completed ?? false;
+
+  if (!profileComplete && (userType === "JOB_SEEKER" || userType === "EMPLOYER")) {
+    // redirect to a complete profile form
+    navigate("/complete-profile");
+    return;
+  }
+
+  // else, redirect based on role
+  if (userType === "ADMIN") navigate("/admin");
+  else if (userType === "EMPLOYER") navigate("/employer");
+  else navigate("/jobs");
+  };
+
+
   const logout = () => {
-    clearAuth();
-    navigate("/login", { replace: true });
+    localStorage.removeItem("authToken");
+    localStorage.removeItem("authUser");
+    setUser(null);
+    setToken(null);
+    // redirect to landing page
+    navigate("/");
+  };
+
+  const register = async (payload) => {
+    // Creates user via POST /api/users
+    const res = await axiosClient.post(API_PATHS.REGISTER, payload);
+    const data = normalizeResponse(res);
+    // If backend returns token + user, call saveAuth. Otherwise just return created user
+    if (data?.token) {
+      const token = data.token;
+      const u = data.user || data;
+      saveAuth(token, u);
+      routeAfterLogin(u);
+      return { token, user: u };
+    }
+    return data;
+  };
+
+  const fetchCurrentUser = async () => {
+    // read id from storage
+    const uid = localStorage.getItem("authUserId") || (user && (user.id || user.userId));
+    if (!uid) return null;
+    try {
+      const res = await axiosClient.get(API_PATHS.GET_USER_BY_ID(uid));
+      const u = normalizeResponse(res);
+      setUser(u);
+      localStorage.setItem("authUser", JSON.stringify(u));
+      return u;
+    } catch (err) {
+      return null;
+    }
   };
 
   const value = {
-    token,
     user,
-    role,
-    isAuthenticated,
     loading,
+    authReady,
     login,
     logout,
+    register,
+    fetchCurrentUser,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
-};
-
-export const useAuth = () => useContext(AuthContext);
+}
